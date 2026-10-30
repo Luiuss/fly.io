@@ -1,4 +1,14 @@
-app = "jp-chisel"
+# 从 GitHub 部署 chisel 的 Fly 配置
+#
+# 相比你原来那份（= chisel 仓库 example/fly.toml 原样抄的，199 字节）改了三处：
+#   1. app 名改成部署页上真实在用的 fly-io-ezwupw（原来写的是 jp-chisel，和实际应用对不上）；
+#   2. 补上 primary_region = "nrt"（东京；想换地方就改，hkg=香港、osa=大阪、sin=新加坡、icn=首尔）；
+#   3. 把 [[services]] 的 tcp 直通 443 换成 [http_service] —— 原因见下面的注释。
+# [build] dockerfile 保持 "Flyfile"，所以仓库根目录必须有那个叫 Flyfile 的文件（大小写敏感）。
+
+app = "fly-io-ezwupw"
+primary_region = "nrt"
+
 kill_signal = "SIGINT"
 kill_timeout = 5
 processes = []
@@ -6,8 +16,21 @@ processes = []
 [build]
   dockerfile = "Flyfile"
 
-[[services]]
-  internal_port = 443
-  protocol = "tcp"
-  [[services.ports]]
-    port = "443"
+# 原来是这样（TCP 直通，Fly 不碰 TLS，容器必须自己出证书）：
+#   [[services]]
+#     internal_port = 443
+#     protocol = "tcp"
+#     [[services.ports]]
+#       port = "443"
+# 这条路要走通，得有自己的域名 + `--tls-domain 你的域名` 让它去签 Let's Encrypt 证书；
+# 而 *.fly.dev 是 Fly 自己的域名，签不了，所以第一次这么部署注定拿不到证书。
+#
+# 换成 http_service 后：Fly 边缘用 app 的合法证书终止 TLS，再把明文 HTTP 转给容器内 8080，
+# chisel 客户端照旧写 https://<app>.fly.dev 就行。WebSocket（chisel 走的就是它）Fly 是支持的。
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # 隧道服务端要一直在线，不能被自动停机
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1

@@ -1,0 +1,21 @@
+# Flyfile —— 部署 chisel 隧道服务端（https://github.com/jpillora/chisel）
+#
+# 为什么是这个写法：
+#   1. 用了 chisel 的官方镜像。1.12 起镜像是 scratch（无 shell），二进制在 /app/bin，
+#      所以参数只能写在 ENTRYPOINT 里，或者用镜像原生识别的环境变量（PORT / HOST / AUTH / CHISEL_KEY_FILE）。
+#   2. 容器内监听 8080 的明文 HTTP，TLS 交给 Fly 边缘终止（见 fly.toml 的 [http_service]），
+#      这样不用自己申请证书，客户端照样用 https:// 连接；
+#      隧道里的数据仍由 chisel 自己的 SSH 层做端到端加密，Fly 边缘读不到内容。
+#   3. 认证不在这个文件里写：到 Fly 应用的「Secrets / 秘密」里加一条 AUTH=用户名:密码。
+#      （chisel 1.12 起，没有冒号的 --auth 会直接启动失败）
+#
+# 想让服务更像“日本出口”，可以再加 --socks5（已加）和 --reverse（已加，允许 R: 反向端口转发）。
+# 只要普通正向隧道的话，把最后一行末尾两个参数删掉即可。
+
+# 用不带 tag 的官方镜像（官方 example 也是这么写的，肯定拉得到）；
+# 想锁版本就改成 jpillora/chisel:1.12.0，但 tag 写错会让构建再次失败。
+FROM jpillora/chisel
+
+EXPOSE 8080
+
+ENTRYPOINT ["/app/bin", "server", "--port", "8080", "--reverse", "--socks5"]
