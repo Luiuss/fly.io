@@ -1,21 +1,39 @@
 # Flyfile —— 部署 chisel 隧道服务端（https://github.com/jpillora/chisel）
 #
-# 为什么是这个写法：
-#   1. 用了 chisel 的官方镜像。1.12 起镜像是 scratch（无 shell），二进制在 /app/bin，
-#      所以参数只能写在 ENTRYPOINT 里，或者用镜像原生识别的环境变量（PORT / HOST / AUTH / CHISEL_KEY_FILE）。
-#   2. 容器内监听 8080 的明文 HTTP，TLS 交给 Fly 边缘终止（见 fly.toml 的 [http_service]），
-#      这样不用自己申请证书，客户端照样用 https:// 连接；
-#      隧道里的数据仍由 chisel 自己的 SSH 层做端到端加密，Fly 边缘读不到内容。
-#   3. 认证不在这个文件里写：到 Fly 应用的「Secrets / 秘密」里加一条 AUTH=用户名:密码。
-#      （chisel 1.12 起，没有冒号的 --auth 会直接启动失败）
+# 为什么不能照抄仓库里的 example/Flyfile：
+#   它写的是 ENTRYPOINT ["/app/bin", "server", ...]，而官方镜像自 1.12 起是 CI 用 ko 构建的
+#   （见 .github/ko-base.Dockerfile + .github/goreleaser.yml 的 kos 段：scratch 基础镜像 + CA 根证书，
+#   仓库里根本没有 Dockerfile，只有 ko 会把静态二进制塞进镜像）。
+#   ko 的二进制路径不是 /app/bin —— 这就是上一轮部署日志里
+#   "failed to spawn command: /app/bin ... No such file or directory (os error 2)" 的原因。
 #
-# 想让服务更像“日本出口”，可以再加 --socks5（已加）和 --reverse（已加，允许 R: 反向端口转发）。
-# 只要普通正向隧道的话，把最后一行末尾两个参数删掉即可。
+# 所以这一版不去猜镜像内部结构：直接从源码编译，二进制路径由这里写死。
+# 顺带把版本钉死，避免哪天 latest 又换了布局。
+#
+# 认证：Fly 应用的「Secrets / 秘密」里加 AUTH=用户名:密码（chisel 1.12 起没冒号的 auth 会直接启动失败）
+# 端口：容器内明文 8080，TLS 由 Fly 边缘终止（见 fly.toml 的 [http_service]）
 
-# 用不带 tag 的官方镜像（官方 example 也是这么写的，肯定拉得到）；
-# 想锁版本就改成 jpillora/chisel:1.12.0，但 tag 写错会让构建再次失败。
-FROM jpillora/chisel
+# ---------- 构建阶段 ----------
+FROM golang:alpine AS build
+
+ARG CHISEL_VERSION=v1.12.0
+
+ENV GOTOOLCHAIN=auto \
+    CGO_ENABLED=0
+
+# go install 走 proxy.golang.org，不需要 git；仓库根包就是 main，所以能直接 install
+RUN mkdir -p /out && GOBIN=/out go install github.com/jpillora/chisel@${CHISEL_VERSION}
+
+# ---------- 运行阶段 ----------
+FROM alpine:3.21
+
+# 留着 CA 根证书：以后若改成 --tls-domain 让 chisel 自己签 Let's Encrypt 会用到
+RUN apk add --no-cache ca-certificates
+
+COPY --from=build /out/chisel /usr/local/bin/chisel
 
 EXPOSE 8080
 
-ENTRYPOINT ["/app/bin", "server", "--port", "8080", "--reverse", "--socks5"]
+# -v：把启动横幅（版本、监听地址、服务器 fingerprint）打进 Fly 日志，排查用
+# --reverse：允许客户端 R: 反向端口转发；--socks5：允许客户端用 socks 把它当出口
+ENTRYPOINT ["/usr/local/bin/chisel", "server", "--port", "8080", "--reverse", "--socks5", "-v"]
